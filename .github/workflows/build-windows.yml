@@ -73,19 +73,35 @@ jobs:
         shell: pwsh
         run: |
           $app = "dist/DouyinLiveRecorder"
-          $must = @(
-            "DouyinLiveRecorder.exe",
-            "config/config.ini",
-            "config/URL_config.ini",
-            "app/web/index.html",
-            "LICENSE",
-            "使用说明.txt"
-          )
-          foreach ($f in $must) {
-            if (-not (Test-Path (Join-Path $app $f))) { throw "产物缺少 $f" }
+
+          # PyInstaller 6 的 onedir 把 datas 放进 _internal/，而 config/ffmpeg/node
+          # 是 post_build 摆在 exe 同级的。所以每个文件给出候选路径，命中任一即可。
+          function Assert-AnyOf($desc, [string[]]$paths) {
+            foreach ($p in $paths) {
+              if (Test-Path (Join-Path $app $p)) {
+                Write-Host ("  OK   {0,-12} {1}" -f $desc, $p)
+                return
+              }
+            }
+            throw ("产物缺少 {0}（找过：{1}）" -f $desc, ($paths -join " / "))
           }
-          Write-Host "关键文件齐全"
-          Get-ChildItem $app | Select-Object Name | Format-Table
+
+          Assert-AnyOf "主程序"     @("DouyinLiveRecorder.exe")
+          Assert-AnyOf "配置模板"   @("config/config.ini")
+          Assert-AnyOf "房间列表"   @("config/URL_config.ini")
+          Assert-AnyOf "图形界面"   @("app/web/index.html", "_internal/app/web/index.html")
+          Assert-AnyOf "JS 运行时"  @("_internal/src/javascript/liveme.js", "src/javascript/liveme.js")
+          Assert-AnyOf "开源协议"   @("LICENSE")
+          Assert-AnyOf "使用说明"   @("使用说明.txt")
+
+          # ffmpeg / node 是 Windows 上最容易出问题、也最致命的两块（缺 ffmpeg 客户端启动即退出）
+          if ("${{ inputs.bundle_ffmpeg }}" -ne "false") { Assert-AnyOf "内置ffmpeg" @("ffmpeg/ffmpeg.exe") }
+          if ("${{ inputs.bundle_node }}"   -ne "false") { Assert-AnyOf "内置node"   @("node/node.exe") }
+
+          Write-Host ""
+          Write-Host "产物根目录："
+          Get-ChildItem $app | Select-Object Mode, Length, Name | Format-Table
+          Write-Host "总大小：$([math]::Round((Get-ChildItem $app -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)) MB"
 
       - name: 压缩
         run: Compress-Archive -Path dist/DouyinLiveRecorder/* -DestinationPath dist/DouyinLiveRecorder-windows.zip -Force

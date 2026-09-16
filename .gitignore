@@ -165,3 +165,13 @@ cython_debug/
 #.idea/
 
 backup_config/
+
+# ── 卡密发卡密钥：绝不要提交到 git ──────────────────────────────
+# 泄漏了任何人都能伪造卡密。CI 构建时从 GitHub Secrets 注入。
+tools/license_secret.txt
+app/secret.py
+
+# Windows 打包产物
+*.spec.bak
+dist/
+build-cache/

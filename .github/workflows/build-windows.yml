@@ -1,0 +1,90 @@
+name: 构建 Windows 版
+
+# 打 tag（v*）时自动出包并创建 Release；也可以在 Actions 页面手动点运行
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      bundle_ffmpeg:
+        description: "内置 ffmpeg（约 +80MB，强烈建议开启，否则客户端启动即退出）"
+        type: boolean
+        default: true
+      bundle_node:
+        description: "内置 Node.js（约 +80MB，斗鱼等依赖 JS 签名的平台需要）"
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-app.txt pyinstaller
+
+      - name: 从 GitHub Secret 注入卡密密钥
+        shell: pwsh
+        env:
+          LICENSE_SECRET: ${{ secrets.LICENSE_SECRET }}
+        run: |
+          if (-not $env:LICENSE_SECRET) {
+            throw "仓库缺少 Secret：LICENSE_SECRET。到 Settings → Secrets and variables → Actions 添加，值 = 本地 tools/license_secret.txt 里那串十六进制。"
+          }
+          python tools/gen_secret.py --from-hex $env:LICENSE_SECRET --force
+
+      - name: PyInstaller 打包
+        run: pyinstaller pack/DouyinLiveRecorder.spec --noconfirm
+
+      - name: 后处理（配置模板 / ffmpeg / node）
+        shell: pwsh
+        run: |
+          $flags = @()
+          if ("${{ inputs.bundle_ffmpeg }}" -ne "false") { $flags += "--ffmpeg" }
+          if ("${{ inputs.bundle_node }}"   -ne "false") { $flags += "--node" }
+          python pack/post_build.py --app-dir dist/DouyinLiveRecorder @flags
+
+      - name: 校验产物完整性
+        shell: pwsh
+        run: |
+          $app = "dist/DouyinLiveRecorder"
+          $must = @(
+            "DouyinLiveRecorder.exe",
+            "config/config.ini",
+            "config/URL_config.ini",
+            "app/web/index.html",
+            "LICENSE",
+            "使用说明.txt"
+          )
+          foreach ($f in $must) {
+            if (-not (Test-Path (Join-Path $app $f))) { throw "产物缺少 $f" }
+          }
+          Write-Host "关键文件齐全"
+          Get-ChildItem $app | Select-Object Name | Format-Table
+
+      - name: 压缩
+        run: Compress-Archive -Path dist/DouyinLiveRecorder/* -DestinationPath dist/DouyinLiveRecorder-windows.zip -Force
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DouyinLiveRecorder-windows
+          path: dist/DouyinLiveRecorder-windows.zip
+          retention-days: 30
+
+      - name: 打 tag 时创建 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DouyinLiveRecorder-windows.zip

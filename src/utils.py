@@ -161,7 +161,10 @@ def check_disk_capacity(file_path: str | Path, show: bool = False) -> float:
 
 def handle_proxy_addr(proxy_addr):
     if proxy_addr:
-        if not proxy_addr.startswith('http'):
+        # 已经带协议的直接用，别给 socks5:// 前面硬加 http://（会变成
+        # http://socks5://... 这种坏地址）。部分 VPN 只开 SOCKS 端口，
+        # 自动探测会挑到它们，所以这里要放行。
+        if not proxy_addr.startswith(('http://', 'https://', 'socks5://', 'socks5h://', 'socks4://', 'socks4a://')):
             proxy_addr = 'http://' + proxy_addr
     else:
         proxy_addr = None

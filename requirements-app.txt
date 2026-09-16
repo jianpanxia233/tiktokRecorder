@@ -1,0 +1,5 @@
+# 桌面版（图形界面 + 卡密 + 代理探测）在 requirements.txt 之外额外需要的依赖
+# 说明：socksio 让 httpx 支持 socks5:// 代理 —— 有些 VPN 客户端只开 SOCKS 端口
+-r requirements.txt
+pywebview>=6.0
+socksio>=1.0

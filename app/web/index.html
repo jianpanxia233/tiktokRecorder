@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DouyinLiveRecorder 桌面版</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ── 激活页 ───────────────────────────────────────────────── -->
+<section id="gate" class="hidden">
+  <div class="gate-card">
+    <h1>需要卡密才能使用</h1>
+    <p id="gate-msg" class="gate-msg">正在检查授权…</p>
+
+    <div class="machine">
+      <div class="machine-main">
+        <label>本机机器码</label>
+        <code id="gate-machine">—</code>
+      </div>
+      <button class="ghost" id="btn-copy-machine">复制</button>
+    </div>
+    <p class="hint">买卡时把机器码发给卖家，可以买绑定本机的一机一码卡</p>
+
+    <input id="gate-input" spellcheck="false" autocomplete="off"
+           placeholder="粘贴卡密，例如 DLR-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX">
+    <button class="primary wide" id="btn-activate">激活</button>
+  </div>
+</section>
+
+<!-- ── 主界面 ───────────────────────────────────────────────── -->
+<div id="app" class="hidden">
+  <header>
+    <div class="brand">DouyinLiveRecorder <span class="ver" id="app-ver"></span></div>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="status-text">已停止</span>
+      <span class="sep">·</span>
+      <span id="license-text">—</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="record" class="active">录制</button>
+    <button data-tab="logs">日志</button>
+    <button data-tab="settings">设置</button>
+    <button data-tab="about">关于</button>
+  </nav>
+
+  <main>
+    <!-- 录制 -->
+    <section data-panel="record">
+      <div class="card">
+        <div class="row between">
+          <div class="row">
+            <button class="primary" id="btn-toggle">启动录制</button>
+            <span class="muted" id="run-info">未运行</span>
+          </div>
+          <button class="ghost" id="btn-open-folder">打开保存目录</button>
+        </div>
+        <p class="muted path" id="save-path">—</p>
+      </div>
+
+      <div class="banner hidden" id="hint-banner">
+        <span id="hint-text"></span>
+        <span class="row">
+          <button class="ghost hidden" id="btn-hint-proxy">去检测代理</button>
+          <button class="ghost" id="btn-hint-goto">查看日志</button>
+        </span>
+      </div>
+
+      <div class="card">
+        <h2>添加直播间</h2>
+        <div class="row">
+          <input id="room-url" class="grow" spellcheck="false"
+                 placeholder="直播间地址，例如 https://www.tiktok.com/@xxx/live">
+          <input id="room-name" class="name" spellcheck="false" placeholder="备注（可留空）">
+          <button class="primary" id="btn-add-room">添加</button>
+        </div>
+        <div class="row between head">
+          <span class="muted" id="room-count">共 0 个直播间</span>
+          <button class="ghost danger" id="btn-clear-rooms">清空列表</button>
+        </div>
+        <ul class="rooms" id="room-list"></ul>
+      </div>
+    </section>
+
+    <!-- 日志 -->
+    <section data-panel="logs" class="hidden">
+      <div class="card grow-card">
+        <div class="row between">
+          <h2>运行日志</h2>
+          <div class="row">
+            <label class="check"><input type="checkbox" id="log-follow" checked> 自动滚动</label>
+            <button class="ghost" id="btn-log-clear">清屏</button>
+          </div>
+        </div>
+        <pre id="log-view" class="log"></pre>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section data-panel="settings" class="hidden">
+      <div class="card">
+        <div class="row between">
+          <h2>代理 / VPN</h2>
+          <div class="row">
+            <label class="check"><input type="checkbox" id="chk-detect-tiktok" checked> 顺带验证 TikTok</label>
+            <button class="ghost" id="btn-proxy-detect">自动检测</button>
+          </div>
+        </div>
+        <p class="muted" id="proxy-now">读取中…</p>
+        <div id="proxy-results" class="proxy-results"></div>
+      </div>
+
+      <div class="card grow-card">
+        <div class="row between">
+          <h2>录制设置</h2>
+          <button class="primary" id="btn-save-config">保存设置</button>
+        </div>
+        <div id="settings-form" class="form"></div>
+        <p class="muted path" id="config-path">—</p>
+      </div>
+    </section>
+
+    <!-- 关于 -->
+    <section data-panel="about" class="hidden">
+      <div class="card">
+        <h2>关于本软件</h2>
+        <dl class="about" id="about-list"></dl>
+      </div>
+      <div class="card">
+        <h2>授权状态</h2>
+        <dl class="about" id="license-list"></dl>
+        <button class="ghost danger" id="btn-open-gate">更换卡密</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toast" class="hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>

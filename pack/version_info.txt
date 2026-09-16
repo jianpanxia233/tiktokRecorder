@@ -1,0 +1,34 @@
+# exe 文件属性里显示的信息（右键 → 属性 → 详细信息）
+# 注意：版权声明里保留了上游作者，这是 MIT 协议的要求。
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(4, 0, 7, 0),
+    prodvers=(4, 0, 7, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          '080404B0',
+          [
+            StringStruct('CompanyName', '基于开源项目构建'),
+            StringStruct('FileDescription', 'DouyinLiveRecorder 桌面版 - 多平台直播录制'),
+            StringStruct('FileVersion', '4.0.7.0'),
+            StringStruct('InternalName', 'DouyinLiveRecorder'),
+            StringStruct('LegalCopyright', 'Copyright (c) 2023-2025 Hmily (MIT License)'),
+            StringStruct('OriginalFilename', 'DouyinLiveRecorder.exe'),
+            StringStruct('ProductName', 'DouyinLiveRecorder'),
+            StringStruct('ProductVersion', '4.0.7.0'),
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct('Translation', [2052, 1200])])
+  ]
+)

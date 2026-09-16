@@ -85,6 +85,10 @@ def signal_handler(_signal, _frame):
 
 
 signal.signal(signal.SIGTERM, signal_handler)
+if os_type == 'nt':
+    # Windows 没有 SIGTERM，图形界面用 CTRL_BREAK 发停止信号，
+    # 这里必须一并注册，否则只能被强杀，ffmpeg 子进程会残留。
+    signal.signal(signal.SIGBREAK, signal_handler)
 
 
 def display_info() -> None:

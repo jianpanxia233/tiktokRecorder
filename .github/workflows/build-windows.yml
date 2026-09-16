@@ -19,6 +19,11 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # Windows runner 的控制台是 cp1252，任何中文输出都会抛 UnicodeEncodeError。
+      # 脚本里已经各自 reconfigure 过，这里再兜一层。
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
     steps:
       - name: 取出代码
         uses: actions/checkout@v4

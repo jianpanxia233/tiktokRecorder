@@ -33,6 +33,13 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+# Windows 控制台默认不是 UTF-8，print 中文会抛 UnicodeEncodeError
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = Path(__file__).resolve().parents[1]
 DIST_NAME = "DouyinLiveRecorder"
 

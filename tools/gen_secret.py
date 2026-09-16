@@ -29,6 +29,14 @@ import stat
 import sys
 from pathlib import Path
 
+# Windows 控制台默认是 cp1252 / cp936，直接 print 中文会抛 UnicodeEncodeError，
+# 在 CI 里会把整个构建打断。统一把输出流切成 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = Path(__file__).resolve().parents[1]
 SECRET_FILE = ROOT / "tools" / "license_secret.txt"
 EMBED_FILE = ROOT / "app" / "secret.py"

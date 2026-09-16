@@ -72,6 +72,11 @@ hiddenimports = [
 icon_file = Path(SPECPATH) / "app.ico"
 version_file = Path(SPECPATH) / "version_info.txt"
 
+# Windows 下 pywebview 走 Edge 内核，底层是 pythonnet/clr，必须一起打进去。
+# 只在 Windows 目标上加，否则 mac/Linux 上会报一堆 "Hidden import not found"。
+if IS_WINDOWS:
+    hiddenimports += ["clr", "clr_loader", "pythonnet"]
+
 a = Analysis(
     [str(ROOT / "launcher.py")],
     pathex=[str(ROOT)],

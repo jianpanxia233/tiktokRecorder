@@ -175,3 +175,6 @@ app/secret.py
 *.spec.bak
 dist/
 build-cache/
+
+# 但打包配置本身必须入库 —— 上面的 *.spec 会把它一起吃掉
+!pack/*.spec

@@ -40,8 +40,17 @@ jobs:
           LICENSE_SECRET: ${{ secrets.LICENSE_SECRET }}
         run: |
           if (-not $env:LICENSE_SECRET) {
-            throw "仓库缺少 Secret：LICENSE_SECRET。到 Settings → Secrets and variables → Actions 添加，值 = 本地 tools/license_secret.txt 里那串十六进制。"
+            Write-Host "==== 没有读到 Secret：LICENSE_SECRET ====" -ForegroundColor Red
+            Write-Host "请逐条检查："
+            Write-Host "  1. 标签页对不对：Settings -> Secrets and variables -> Actions"
+            Write-Host "     要加在 'Repository secrets' 里，不要加到 'Environment secrets'"
+            Write-Host "  2. 别加在 'Variables' 标签页 —— 那里是 vars 不是 secrets，工作流读不到"
+            Write-Host "  3. 名字必须一模一样：LICENSE_SECRET"
+            Write-Host "  4. 值 = 本地 tools/license_secret.txt 里那串十六进制，不要带引号或换行"
+            Write-Host "  5. 确认是在 jianpanxia233/tiktokRecorder 这个仓库里加的"
+            throw "缺少 LICENSE_SECRET"
           }
+          Write-Host ("已读到 LICENSE_SECRET，长度 " + $env:LICENSE_SECRET.Length + "（应为 64）")
           python tools/gen_secret.py --from-hex $env:LICENSE_SECRET --force
 
       - name: PyInstaller 打包

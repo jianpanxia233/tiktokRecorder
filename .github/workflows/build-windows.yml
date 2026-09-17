@@ -139,16 +139,20 @@ jobs:
 
       - name: 打 tag 时创建 Release
         if: startsWith(github.ref, 'refs/tags/')
-        # 这里故意不用 softprops/action-gh-release：它在 v4.0.8 那次运行里
-        # 一直挂着不结束（跑满 12 分钟仍 in_progress）。换成官方 gh CLI，
-        # 报错信息清楚，再配一个超时护栏，最多卡 10 分钟就主动失败。
-        timeout-minutes: 10
+        # 不用 softprops/action-gh-release（它在这仓库上跑 12 分钟毫无输出）。
+        # 改用官方 gh CLI，日志清楚。
+        #
+        # 超时设 45 分钟是有依据的：v4.0.8 实测这一步要 18.1 分钟 —— 不是卡死，
+        # 是上传 118MB 附件到 uploads.github.com 就是这么慢（同一份内容走
+        # artifact 只要 12 秒，说明不是网络问题，是 Release 上传通道慢）。
+        # 之前设 10 分钟会把正常的上传掐死，反而造出没有附件的残缺 Release。
+        timeout-minutes: 45
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh --version
-          Write-Host "创建 Release：$env:GITHUB_REF_NAME"
+          Write-Host "创建 Release：$env:GITHUB_REF_NAME（上传 118MB 附件，预计 15~20 分钟，请耐心等）"
           gh release create $env:GITHUB_REF_NAME "dist/DouyinLiveRecorder-windows.zip" --title $env:GITHUB_REF_NAME --notes "Windows 版，解压即用。已内置 ffmpeg 与 Node.js，客户端无需额外安装任何东西。"
           Write-Host "Release 创建完成，附件如下："
           gh release view $env:GITHUB_REF_NAME --json assets

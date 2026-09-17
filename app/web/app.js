@@ -504,6 +504,7 @@
       ['有效期', lic.describe],
       ['机器码', lic.machine_code],
       ['卡号', lic.key_id == null ? '—' : String(lic.key_id)],
+      ['授权文件', lic.storage && lic.storage.ok ? lic.storage.file : '不可写（激活会失败，把这条发给卖家）'],
     ];
     licRows.forEach(([key, value]) => {
       const dt = document.createElement('dt');

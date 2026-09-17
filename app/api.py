@@ -130,6 +130,8 @@ class Api:
             "days_left": info.days_left,
             "bound": info.bound,
             "key_id": info.key_id,
+            # 授权文件存在哪、能不能写 —— 售后排查用得上
+            "storage": lic.storage_info(),
         }
 
     def license_state(self) -> dict:

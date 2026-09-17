@@ -36,6 +36,7 @@ import platform
 import re
 import struct
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -96,7 +97,7 @@ MESSAGES: dict[Status, str] = {
     Status.EXPIRED: "卡密已过期",
     Status.MACHINE_MISMATCH: "此卡密已绑定其他机器",
     Status.CLOCK_TAMPERED: "系统时间异常，请校准后重试",
-    Status.STORAGE_ERROR: "本地授权信息读取失败，请重新激活",
+    Status.STORAGE_ERROR: "授权信息保存失败",   # 真实原因会拼在括号里
 }
 
 
@@ -344,21 +345,81 @@ def verify_key(text: str, code: str | None = None, *, today: date | None = None)
 # 本地存储
 # --------------------------------------------------------------------------- #
 
-def storage_dir() -> Path:
+def _storage_candidates() -> list[Path]:
+    """按优先级列出可以放授权文件的目录。
+
+    首选系统标准位置；万不得已再退到程序目录旁边 —— 有些机器上
+    ``%APPDATA%`` 会因为企业策略或杀毒软件拦截而写不进去，
+    退到绿色版目录至少还能用。
+    """
+    candidates: list[Path] = []
     system = platform.system()
     if system == "Windows":
-        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "DouyinLiveRecorder")
+        candidates.append(Path.home() / "AppData" / "Roaming" / "DouyinLiveRecorder")
     elif system == "Darwin":
-        base = Path.home() / "Library" / "Application Support"
+        candidates.append(Path.home() / "Library" / "Application Support" / "DouyinLiveRecorder")
     else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    directory = base / "DouyinLiveRecorder"
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
+        candidates.append(
+            Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "DouyinLiveRecorder"
+        )
+    try:
+        app_dir = (
+            Path(sys.executable).resolve().parent
+            if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parents[1]
+        )
+        candidates.append(app_dir / "license")
+    except Exception:
+        pass
+    return candidates
+
+
+_storage_dir: Path | None = None
+
+
+def _write_probe(directory: Path) -> None:
+    """真写一个文件试试 —— 只看权限位在 Windows 上并不可靠。"""
+    probe = directory / ".write-test"
+    probe.write_bytes(b"ok")
+    probe.unlink()
+
+
+def storage_dir() -> Path:
+    """返回一个确实可写的目录；全都不行就抛出带原因的 OSError。"""
+    global _storage_dir
+    if _storage_dir is not None:
+        return _storage_dir
+
+    problems: list[str] = []
+    for candidate in _storage_candidates():
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            _write_probe(candidate)
+        except Exception as err:
+            problems.append(f"{candidate} ({type(err).__name__}: {err})")
+            continue
+        _storage_dir = candidate
+        return candidate
+
+    raise OSError("没有可写的目录，试过：" + "；".join(problems))
 
 
 def storage_file() -> Path:
     return storage_dir() / "license.dat"
+
+
+def storage_info() -> dict:
+    """给界面和售后看的：授权文件存在哪、到底能不能写。"""
+    candidates = [str(path) for path in _storage_candidates()]
+    try:
+        directory = storage_dir()
+        return {"ok": True, "dir": str(directory), "file": str(directory / "license.dat"),
+                "candidates": candidates}
+    except Exception as err:
+        return {"ok": False, "dir": "", "file": "", "error": str(err), "candidates": candidates}
 
 
 def _stream_key(code: str) -> bytes:
@@ -372,10 +433,10 @@ def _write_record(record: dict[str, Any], code: str) -> None:
 
 
 def load_record(code: str | None = None) -> dict[str, Any] | None:
-    path = storage_file()
-    if not path.exists():
-        return None
     try:
+        path = storage_file()
+        if not path.exists():
+            return None
         blob = path.read_bytes()
         nonce, tag, ciphertext = blob[:16], blob[16:32], blob[32:]
         cipher = AES.new(_stream_key(code or machine_code()), AES.MODE_GCM, nonce=nonce)
@@ -396,8 +457,11 @@ def activate(text: str, code: str | None = None) -> LicenseInfo:
             {"key": normalize_key(text), "code": code, "activated_at": now, "last_seen": now},
             code,
         )
-    except Exception:
-        return LicenseInfo(Status.STORAGE_ERROR, message=MESSAGES[Status.STORAGE_ERROR])
+    except Exception as err:
+        # 这里以前是 `except Exception:` 把原因吞了，用户只看到一句"读取失败"，
+        # 售后完全没法查。现在把真实原因带在括号里。
+        detail = f"{type(err).__name__}: {err}"
+        return LicenseInfo(Status.STORAGE_ERROR, message=f"{MESSAGES[Status.STORAGE_ERROR]}（{detail[:220]}）")
     return info
 
 

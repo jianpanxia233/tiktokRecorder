@@ -104,13 +104,32 @@ jobs:
           Write-Host "总大小：$([math]::Round((Get-ChildItem $app -Recurse -File | Measure-Object Length -Sum).Sum / 1MB, 1)) MB"
 
       - name: 压缩
-        run: Compress-Archive -Path dist/DouyinLiveRecorder/* -DestinationPath dist/DouyinLiveRecorder-windows.zip -Force
+        shell: pwsh
+        run: |
+          # 用 tar（Windows 10+ 自带 bsdtar）而不是 Compress-Archive：
+          # 一是快很多（这是 200MB 的包），二是能可靠地把顶层文件夹打进去。
+          # 压缩包里必须有 DouyinLiveRecorder/ 这一层，客户解压才不会把
+          # _internal、config 这些文件倒得满目录都是。
+          tar -a -c -f dist/DouyinLiveRecorder-windows.zip -C dist DouyinLiveRecorder
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "tar 失败，退回 Compress-Archive"
+            Push-Location dist
+            Compress-Archive -Path DouyinLiveRecorder -DestinationPath DouyinLiveRecorder-windows.zip -Force
+            Pop-Location
+          }
+          Write-Host "压缩包根层内容（应该只有一个 DouyinLiveRecorder/）："
+          tar -tf dist/DouyinLiveRecorder-windows.zip | Select-Object -First 5
 
       - name: 上传 artifact
         uses: actions/upload-artifact@v4
         with:
           name: DouyinLiveRecorder-windows
-          path: dist/DouyinLiveRecorder-windows.zip
+          # 上传**文件夹**而不是那个 zip。原因：GitHub 的 artifact 下载本身
+          # 就会再包一层 zip（下载下来文件名叫 <artifact 名>.zip）。
+          # 如果这里上传 zip，客户拿到的是「zip 套 zip」，而且内外同名 ——
+          # 外层解压到当前目录时会与正在读取的自身冲突，WinRAR 直接报
+          # 「无法创建 xxx.zip，另一个程序正在使用此文件」。
+          path: dist/DouyinLiveRecorder
           retention-days: 30
 
       - name: 打 tag 时创建 Release

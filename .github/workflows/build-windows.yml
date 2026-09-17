@@ -19,6 +19,11 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    # 打 tag 时要用 softprops/action-gh-release 创建 Release，必须显式申请写权限。
+    # 新版仓库默认给工作流的 GITHUB_TOKEN 是只读的，不加这行会报
+    # "Resource not accessible by integration"。
+    permissions:
+      contents: write
     env:
       # Windows runner 的控制台是 cp1252，任何中文输出都会抛 UnicodeEncodeError。
       # 脚本里已经各自 reconfigure 过，这里再兜一层。

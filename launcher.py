@@ -65,12 +65,23 @@ def _silence_subprocess_windows() -> None:
 
     original_popen = subprocess.Popen
 
-    def quiet_popen(*args, **kwargs):
-        kwargs["creationflags"] = kwargs.get("creationflags", 0) | flag
-        return original_popen(*args, **kwargs)
+    # 必须是**子类**，不能是普通函数。
+    # 标准库里真有地方直接继承它 —— asyncio/windows_utils.py 里就写着
+    # `class Popen(subprocess.Popen)`，一旦把 subprocess.Popen 换成函数，
+    # 那句类定义就会抛 TypeError: function() argument 'code' must be code, not str，
+    # 而报错位置会指向标准库，极难定位（客户就是这么炸的）。
+    class QuietPopen(original_popen):
+        def __init__(self, *args, **kwargs):
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | flag
+            super().__init__(*args, **kwargs)
 
-    # run/call/check_output/check_call 内部都走 Popen，改这一个就够
-    subprocess.Popen = quiet_popen
+    for attr in ("__name__", "__qualname__", "__module__"):
+        if hasattr(original_popen, attr):
+            try:
+                setattr(QuietPopen, attr, getattr(original_popen, attr))
+            except (AttributeError, TypeError):
+                pass
+    subprocess.Popen = QuietPopen
 
     if getattr(sys, "frozen", False):
         def quiet_system(command):
@@ -121,4 +132,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # 冻结后的 Windows 程序里只要用到 multiprocessing 就该调这个，
+    # 否则子进程启动时会重新执行整个脚本（loguru 的 enqueue=True 就会用到
+    # multiprocessing 的队列）。放在最前面，且失败也不影响主流程。
+    try:
+        import multiprocessing
+
+        multiprocessing.freeze_support()
+    except Exception:
+        pass
     main()

@@ -139,6 +139,16 @@ jobs:
 
       - name: 打 tag 时创建 Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/DouyinLiveRecorder-windows.zip
+        # 这里故意不用 softprops/action-gh-release：它在 v4.0.8 那次运行里
+        # 一直挂着不结束（跑满 12 分钟仍 in_progress）。换成官方 gh CLI，
+        # 报错信息清楚，再配一个超时护栏，最多卡 10 分钟就主动失败。
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh --version
+          Write-Host "创建 Release：$env:GITHUB_REF_NAME"
+          gh release create $env:GITHUB_REF_NAME "dist/DouyinLiveRecorder-windows.zip" --title $env:GITHUB_REF_NAME --notes "Windows 版，解压即用。已内置 ffmpeg 与 Node.js，客户端无需额外安装任何东西。"
+          Write-Host "Release 创建完成，附件如下："
+          gh release view $env:GITHUB_REF_NAME --json assets

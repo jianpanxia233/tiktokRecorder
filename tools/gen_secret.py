@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import stat
 import sys
 from pathlib import Path
@@ -54,6 +55,72 @@ EMBED_TEMPLATE = '''# -*- coding: utf-8 -*-
 SECRET_BLOB_HEX = "{blob}"
 SECRET_MASK_HEX = "{mask}"
 '''
+
+
+def restrict_to_owner(path: Path) -> None:
+    """把文件权限收紧到「只有当前用户可以读写」。
+
+    注意：**Windows 上 ``os.chmod`` 改了等于没改** —— 它只能切只读位，
+    POSIX 权限位在 Windows 上不参与访问控制，``st_mode`` 一直是 0o666。
+    所以这里必须走各平台真正的机制：
+
+    * Windows：用 .NET 的 ACL API 去掉继承，只留「当前用户」一条 FullControl。
+      不做这一步的话，密钥文件会从父目录继承到
+      ``NT AUTHORITY\\Authenticated Users:(M)``，同一台机器上**任何**账户都能读，
+      拿到它就等于拿到了发卡能力。
+    * 其它平台：``os.chmod(0o600)``，本来就是对的。
+    """
+    if platform.system() == "Windows":
+        try:
+            import clr  # noqa: F401  必须先 import clr，pythonnet 才会注册 System 命名空间
+            from System.IO import File  # type: ignore[import-not-found]
+            from System.Security.AccessControl import (  # type: ignore[import-not-found]
+                AccessControlType,
+                FileSystemAccessRule,
+                FileSystemRights,
+                InheritanceFlags,
+                PropagationFlags,
+            )
+            from System.Security.Principal import (  # type: ignore[import-not-found]
+                SecurityIdentifier,
+                WindowsIdentity,
+            )
+
+            # InheritanceFlags.None / PropagationFlags.None 不能直接写点号取 ——
+            # None 是 Python 关键字，`X.None` 是语法错误，只能用 getattr 取。
+            inherit_none = getattr(InheritanceFlags, "None")
+            propagate_none = getattr(PropagationFlags, "None")
+
+            identity = WindowsIdentity.GetCurrent()
+            owner = identity.User
+            if owner is None:                       # 极少数取不到 SID 的情况
+                owner = SecurityIdentifier(identity.Owner.Value)
+
+            full_path = str(Path(path).resolve())
+            info = File.GetAccessControl(full_path)
+            # 断开继承，并且不把继承来的规则复制过来
+            info.SetAccessRuleProtection(True, False)
+            for rule in list(info.GetAccessRules(True, True, SecurityIdentifier)):
+                info.RemoveAccessRule(rule)
+            info.AddAccessRule(
+                FileSystemAccessRule(
+                    owner,
+                    FileSystemRights.FullControl,
+                    inherit_none,
+                    propagate_none,
+                    AccessControlType.Allow,
+                )
+            )
+            File.SetAccessControl(full_path, info)
+            return
+        except Exception as err:  # pragma: no cover - 兜底：至少别把生成流程搞挂
+            print(f"警告：收紧 Windows ACL 失败（{type(err).__name__}: {err}），"
+                  f"请手动确认 {path.name} 没有被其他账户读取")
+
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
 
 
 def main() -> int:
@@ -87,10 +154,7 @@ def main() -> int:
 
     SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
     SECRET_FILE.write_text(secret.hex() + "\n", encoding="utf-8")
-    try:
-        os.chmod(SECRET_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 仅本人可读写
-    except OSError:
-        pass
+    restrict_to_owner(SECRET_FILE)
 
     EMBED_FILE.parent.mkdir(parents=True, exist_ok=True)
     EMBED_FILE.write_text(

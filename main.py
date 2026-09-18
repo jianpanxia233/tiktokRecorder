@@ -21,6 +21,7 @@ import re
 import shutil
 import random
 import uuid
+from collections import deque
 from pathlib import Path
 import urllib.request
 from urllib.error import URLError, HTTPError
@@ -422,11 +423,36 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
 
 
 def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, save_type: str,
-                     script_command: str | None = None) -> bool:
+                     script_command: str | None = None) -> tuple[bool, float, int, str]:
+    """跑 ffmpeg 拉流录制。
+
+    返回 ``(是否被注释中止, 录制持续秒数, 产物字节数, ffmpeg 错误摘要)``。
+
+    以前只返回一个 bool，导致调用方无法判断「ffmpeg 是正常结束还是秒退」——
+    而秒退恰恰是产生大量碎片的根因：拉流被 CDN/风控掐断后 ffmpeg 几秒就退出，
+    外层循环立刻重开一个**新文件**。所以这里补上时长、产物大小和错误摘要。
+    """
     save_file_path = ffmpeg_command[-1]
     process = subprocess.Popen(
         ffmpeg_command, stdin=subprocess.PIPE, stderr=subprocess.STDOUT, startupinfo=get_startup_info(os_type)
     )
+
+    # 收集末尾输出：`-loglevel error` 时这里是真正的失败原因（TLS 被掐、404 等）
+    tail_lines: deque[str] = deque(maxlen=40)
+
+    def _drain() -> None:
+        try:
+            if process.stdout is None:
+                return
+            for raw in process.stdout:
+                line = raw.decode('utf-8', 'replace').strip()
+                if line:
+                    tail_lines.append(line)
+        except Exception:
+            pass
+
+    drain_thread = threading.Thread(target=_drain, daemon=True)
+    drain_thread.start()
 
     subs_file_path = save_file_path.rsplit('.', maxsplit=1)[0]
     subs_thread_name = f'subs_{Path(subs_file_path).name}'
@@ -437,6 +463,17 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
         create_var[subs_thread_name].daemon = True
         create_var[subs_thread_name].start()
 
+    begin_time = time.time()
+    # ---- 停滞看门狗 ----
+    # 实测问题：直播流中途停掉时，ffmpeg 会**既不退出也不重连**，就那样永久挂着
+    # （`-reconnect_streamed` / `-reconnect_at_eof` 会一直等）。
+    # 界面上显示「正在录制」，实际磁盘上再也没有新数据，用户以为在录、其实全丢了。
+    # 这里盯住产物大小：连续 STALL_TIMEOUT 秒没有任何增长，就判定停滞并让 ffmpeg 正常收尾，
+    # 交给外层循环重新解析地址、重开录制（外层已有失败退避，不会刷碎片）。
+    STALL_TIMEOUT = 90
+    last_size = get_file_size(save_file_path)
+    last_change = time.time()
+    stall_reason = ''
     while process.poll() is None:
         if record_url in url_comments or exit_recording:
             color_obj.print_colored(f"[{record_name}]录制时已被注释,本条线程将会退出", color_obj.YELLOW)
@@ -449,13 +486,56 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
             else:
                 process.send_signal(signal.SIGINT)
             process.wait()
-            return True
+            return True, time.time() - begin_time, get_file_size(save_file_path), ''
+
+        current_size = get_file_size(save_file_path)
+        if current_size != last_size:
+            last_size = current_size
+            last_change = time.time()
+        elif time.time() - last_change > STALL_TIMEOUT:
+            stall_reason = (f'产物已连续 {STALL_TIMEOUT} 秒没有增长（停留在 '
+                            f'{current_size / 1024:.0f} KB），判定拉流停滞')
+            color_obj.print_colored(f"\n[{record_name}] {stall_reason}，重启录制\n", color_obj.YELLOW)
+            if os.name == 'nt':
+                if process.stdin:
+                    try:
+                        process.stdin.write(b'q')
+                        process.stdin.close()
+                    except OSError:
+                        pass
+            else:
+                try:
+                    process.send_signal(signal.SIGINT)
+                except OSError:
+                    pass
+            try:
+                process.wait(timeout=20)          # 给它机会把缓冲写完
+            except subprocess.TimeoutExpired:
+                process.kill()
+            break
+
         time.sleep(1)
 
+    elapsed = time.time() - begin_time
     return_code = process.returncode
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
+    drain_thread.join(timeout=3)                 # 等 stderr 读完，否则摘要可能是空的
+    err_summary = ' | '.join(list(tail_lines)[-6:])
+    if stall_reason:
+        err_summary = f'{stall_reason}；{err_summary}' if err_summary else stall_reason
+    written = get_file_size(save_file_path)
     if return_code == 0:
-        if converts_to_mp4 and save_type == 'TS':
+        # 注意：ffmpeg 返回 0 不等于「这场直播录完了」。拉流被掐断、超时踢退
+        # 也都可能返回 0 —— 实测一次只录了 21 秒、185 KB 的失败也走了这里。
+        # 以前会照样转 mp4，而配置里「追加格式后删除原文件 = 是」会把原 ts 删掉，
+        # 等于「失败的东西转了个封装，还把原始数据删了」。所以太短的直接跳过转换。
+        too_short_to_convert = written < 512 * 1024 and elapsed < 60
+        if too_short_to_convert:
+            logger.warning(
+                f"[{record_name}] 本次仅录制 {elapsed:.0f} 秒 / {written / 1024:.0f} KB，"
+                f"判定为失败片段，跳过转 mp4 与删除原文件（避免把仅有的数据弄丢）"
+            )
+        elif converts_to_mp4 and save_type == 'TS':
             if split_video_by_time:
                 file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
                 prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
@@ -464,7 +544,12 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
                         threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
             else:
                 threading.Thread(target=converts_mp4, args=(save_file_path, delete_origin_file)).start()
-        print(f"\n{record_name} {stop_time} 直播录制完成\n")
+
+        if too_short_to_convert:
+            print(f"\n{record_name} {stop_time} 录制中断（仅 {elapsed:.0f} 秒），"
+                  f"已保留原始文件\n")
+        else:
+            print(f"\n{record_name} {stop_time} 直播录制完成\n")
 
         if script_command:
             logger.debug("开始执行脚本命令!")
@@ -490,9 +575,83 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
 
     else:
         color_obj.print_colored(f"\n{record_name} {stop_time} 直播录制出错,返回码: {return_code}\n", color_obj.RED)
+        if err_summary:
+            logger.error(f"[{record_name}] ffmpeg 输出: {err_summary[:600]}")
 
     recording.discard(record_name)
-    return False
+    return False, elapsed, written, err_summary
+
+
+def get_file_size(path: str) -> int:
+    """产物大小；分段/多文件模式下取同前缀文件的总和。"""
+    try:
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        directory = os.path.dirname(path)
+        prefix = os.path.basename(path)
+        for token in ('_%03d', '%03d'):
+            if token in prefix:
+                prefix = prefix.split(token)[0]
+                break
+        else:
+            prefix = prefix.rsplit('.', maxsplit=1)[0]
+        total = 0
+        for name in os.listdir(directory):
+            if name.startswith(prefix):
+                try:
+                    total += os.path.getsize(os.path.join(directory, name))
+                except OSError:
+                    pass
+        return total
+    except OSError:
+        return 0
+
+
+def report_failure(record_name: str, elapsed: float, written: int, err_summary: str,
+                   fail_streak: int) -> tuple[int, int]:
+    """录制失败后的退避决策。
+
+    **这是防碎片的关键**：以前 ffmpeg 一退出，外层循环立刻重开一个新文件，
+    拉流不稳时会几十秒一个碎片。现在如果这次「秒退且几乎没写出数据」，
+    就先把 streak 加一，并等一会儿再试，避免短时间内刷出一堆空碎片。
+
+    返回 ``(新的 fail_streak, 需要等待的秒数)``。
+    """
+    quick_fail = elapsed < 60 or written < 256 * 1024
+    if not quick_fail:
+        return 0, 0
+
+    streak = fail_streak + 1
+    wait = min(120, 5 * (2 ** (streak - 1)))          # 5/10/20/40/80/120 秒，封顶 2 分钟
+    color_obj.print_colored(
+        f"\n[{record_name}] 录制仅持续 {elapsed:.0f} 秒、写出 {written / 1024:.0f} KB，"
+        f"判定为拉流失败（连续第 {streak} 次），{wait} 秒后再重试。\n",
+        color_obj.YELLOW
+    )
+    if err_summary:
+        color_obj.print_colored(f"  ffmpeg 最后输出: {err_summary[:300]}\n", color_obj.YELLOW)
+    return streak, wait
+
+
+def looks_like_url(text: str) -> bool:
+    """判断一段文本是不是网址。
+
+    URL_config.ini 里常见这么写：``https://.../live,主播: https://.../live``，
+    加了「主播:」前缀却没写真实名字，解析出来 anchor_name 就是个 URL。
+    以前会直接把它当主播名用，于是产生
+    ``https___www_tiktok_com_@xxx_live_2026-....ts`` 这种又长又没意义的文件名。
+    """
+    return bool(re.match(r'^\s*https?://', text or '', re.I))
+
+
+def normalize_anchor_name(raw: str) -> str:
+    """把「主播:」前缀剥掉；剥完是空或是网址就返回空串，让调用方改用平台返回的真实昵称。"""
+    text = (raw or '').strip()
+    if '主播:' in text:
+        text = text.split('主播:')[-1].strip()
+    if not text or looks_like_url(text):
+        return ''
+    return text
 
 
 def clean_name(input_text):
@@ -557,6 +716,8 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             new_record_url = ''
             count_time = time.time()
             retry = 0
+            # 连续「秒退」次数：拉流不稳时用它做退避，避免几十秒刷一个碎片文件
+            fail_streak = 0
             record_quality_zh, record_url, anchor_name = url_data
             record_quality = get_quality_code(record_quality_zh)
             proxy_address = proxy_addr
@@ -580,7 +741,11 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
             # print(f'\r全局代理:{global_proxy}')
             while True:
                 try:
-                    port_info = []
+                    # 哨兵必须是 dict：调用方全程按 port_info.get(...) / port_info['key'] 使用。
+                    # 原来初始化成 []，一旦某个平台分支没能赋值（例如 TikTok 在没走代理时
+                    # 只打日志不赋值），后面就会炸出
+                    # `'list' object has no attribute 'get'`，把真正的失败原因盖掉。
+                    port_info: dict = {}
                     if record_url.find("douyin.com/") > -1:
                         platform = '抖音直播'
                         with semaphore:
@@ -608,7 +773,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                 port_info = asyncio.run(
                                     stream.get_tiktok_stream_url(json_data, record_quality, proxy_address))
                             else:
-                                logger.error("错误信息: 网络异常，请检查网络是否能正常访问TikTok平台")
+                                # 既没有全局代理、也没配平台代理时，TikTok 抓不到数据。
+                                # 这里必须给 port_info 一个明确的「不可用」dict，
+                                # 否则会以 list.get() 的形式炸掉，掩盖真实原因。
+                                logger.error(
+                                    "TikTok 需要代理：既未检测到全局/规则代理，"
+                                    "config.ini 里也没给 tiktok 配代理地址。"
+                                    "若使用 TUN 全局模式可忽略；否则请把代理地址填上。"
+                                )
+                                port_info = {"anchor_name": None, "is_live": False}
+                                retry += 1
 
                     elif record_url.find("https://live.kuaishou.com/") > -1:
                         platform = '快手直播'
@@ -1043,15 +1217,21 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                         logger.error(f'{record_url} {platform}直播地址')
                         return
 
-                    if anchor_name:
-                        if '主播:' in anchor_name:
-                            anchor_split: list = anchor_name.split('主播:')
-                            if len(anchor_split) > 1 and anchor_split[1].strip():
-                                anchor_name = anchor_split[1].strip()
-                            else:
-                                anchor_name = port_info.get("anchor_name", '')
-                    else:
-                        anchor_name = port_info.get("anchor_name", '')
+                    # 个别平台在异常路径下可能返回 list/None 而不是 dict。
+                    # 与其让后面 port_info.get() 炸出难懂的 AttributeError，
+                    # 不如在这里就归一成一个空的「不可用」结果，走正常重试逻辑。
+                    if not isinstance(port_info, dict):
+                        logger.error(
+                            f"{platform} 返回了意外的数据类型 {type(port_info).__name__}，"
+                            f"按获取失败处理（内容：{str(port_info)[:200]}）"
+                        )
+                        port_info = {"anchor_name": None, "is_live": False}
+
+                    # URL_config.ini 里「主播:」后面可能是空的、也可能被填成了网址本身。
+                    # 这两种情况都退回平台返回的真实昵称，否则文件名会长成
+                    # https___www_tiktok_com_@xxx_live_2026-... 这种没意义的样子。
+                    resolved_name = normalize_anchor_name(anchor_name)
+                    anchor_name = resolved_name or port_info.get("anchor_name") or ''
 
                     if not port_info.get("anchor_name", ''):
                         print(f'序号{count_variable} 网址内容获取失败,进行重试中...获取失败的地址是:{url_data}')
@@ -1203,6 +1383,14 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                     ffmpeg_command.insert(11, "-headers")
                                     ffmpeg_command.insert(12, headers)
 
+                                # TikTok 的 CDN 签名流会校验会话，不带 cookie 时
+                                # 常见表现就是 `[tls] Error in the pull function / IO error: End of file`，
+                                # ffmpeg 几秒就退出 -> 外层循环立刻重开一个新文件 -> 大量碎片。
+                                # 之前只有抓页面时带了 cookie，拉流这一步是完全不带的。
+                                if platform == 'TikTok直播' and tiktok_cookie:
+                                    ffmpeg_command.insert(11, "-headers")
+                                    ffmpeg_command.insert(12, f"Cookie: {tiktok_cookie}\r\n")
+
                                 if proxy_address:
                                     ffmpeg_command.insert(1, "-http_proxy")
                                     ffmpeg_command.insert(2, proxy_address)
@@ -1293,7 +1481,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 ]
 
                                         ffmpeg_command.extend(command)
-                                        comment_end = check_subprocess(
+                                        comment_end, _, _, _ = check_subprocess(
                                             record_name,
                                             record_url,
                                             ffmpeg_command,
@@ -1385,7 +1573,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             ]
                                         ffmpeg_command.extend(command)
 
-                                        comment_end = check_subprocess(
+                                        comment_end, _elapsed, _written, _err = check_subprocess(
                                             record_name,
                                             record_url,
                                             ffmpeg_command,
@@ -1393,6 +1581,12 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             custom_script
                                         )
                                         if comment_end:
+                                            return
+                                        if not comment_end:
+                                            fail_streak, _wait = report_failure(
+                                                record_name, _elapsed, _written, _err, fail_streak)
+                                            if _wait:
+                                                time.sleep(_wait)
                                             return
 
                                     except subprocess.CalledProcessError as e:
@@ -1459,7 +1653,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             ]
                                         ffmpeg_command.extend(command)
 
-                                        comment_end = check_subprocess(
+                                        comment_end, _elapsed, _written, _err = check_subprocess(
                                             record_name,
                                             record_url,
                                             ffmpeg_command,
@@ -1467,6 +1661,12 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             custom_script
                                         )
                                         if comment_end:
+                                            return
+                                        if not comment_end:
+                                            fail_streak, _wait = report_failure(
+                                                record_name, _elapsed, _written, _err, fail_streak)
+                                            if _wait:
+                                                time.sleep(_wait)
                                             return
 
                                     except subprocess.CalledProcessError as e:
@@ -1506,7 +1706,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             ]
 
                                         ffmpeg_command.extend(command)
-                                        comment_end = check_subprocess(
+                                        comment_end, _elapsed, _written, _err = check_subprocess(
                                             record_name,
                                             record_url,
                                             ffmpeg_command,
@@ -1514,6 +1714,12 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             custom_script
                                         )
                                         if comment_end:
+                                            return
+                                        if not comment_end:
+                                            fail_streak, _wait = report_failure(
+                                                record_name, _elapsed, _written, _err, fail_streak)
+                                            if _wait:
+                                                time.sleep(_wait)
                                             return
 
                                     except subprocess.CalledProcessError as e:
@@ -1542,7 +1748,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             ]
 
                                             ffmpeg_command.extend(command)
-                                            comment_end = check_subprocess(
+                                            comment_end, _elapsed, _written, _err = check_subprocess(
                                                 record_name,
                                                 record_url,
                                                 ffmpeg_command,
@@ -1550,6 +1756,12 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 custom_script
                                             )
                                             if comment_end:
+                                                return
+                                            if not comment_end:
+                                                fail_streak, _wait = report_failure(
+                                                    record_name, _elapsed, _written, _err, fail_streak)
+                                                if _wait:
+                                                    time.sleep(_wait)
                                                 if converts_to_mp4:
                                                     file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
                                                     prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
@@ -1586,7 +1798,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             ]
 
                                             ffmpeg_command.extend(command)
-                                            comment_end = check_subprocess(
+                                            comment_end, _elapsed, _written, _err = check_subprocess(
                                                 record_name,
                                                 record_url,
                                                 ffmpeg_command,
@@ -1594,6 +1806,12 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 custom_script
                                             )
                                             if comment_end:
+                                                return
+                                            if not comment_end:
+                                                fail_streak, _wait = report_failure(
+                                                    record_name, _elapsed, _written, _err, fail_streak)
+                                                if _wait:
+                                                    time.sleep(_wait)
                                                 threading.Thread(
                                                     target=converts_mp4, args=(save_file_path, delete_origin_file)
                                                 ).start()

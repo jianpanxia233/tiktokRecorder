@@ -307,7 +307,23 @@ async def get_tiktok_stream_data(url: str, proxy_addr: OptionalStr = None, cooki
                     '<script id="SIGI_STATE" type="application/json">(.*?)</script>',
                     html_str, re.DOTALL)[0]
             except Exception:
-                raise ConnectionError("Please check if your network can access the TikTok website normally")
+                # 这里最常见的情况其实**不是**网络不通，而是被 TikTok 的风控（WAF）拦了：
+                # 返回的是 slardar 挑战页（几百字节），里面根本没有 SIGI_STATE。
+                # 原来一律报 "check your network"，会把排查方向完全带偏，所以分开报。
+                if "slardar" in html_str or "slardar_us_waf" in html_str:
+                    raise ConnectionError(
+                        "TikTok 风控拦截（WAF 挑战页）：服务端返回的是机器人校验页，不是直播间页面。"
+                        "请更换更干净的代理节点（住宅IP最佳），或在 config.ini 的 "
+                        "[Cookie] tiktok_cookie 里填一段**真实浏览器登录后**的 cookie。"
+                    )
+                if "discontinued operating TikTok" in html_str:
+                    raise ConnectionError(
+                        "当前代理节点的地区被 TikTok 屏蔽，请换一个地区的节点。"
+                    )
+                raise ConnectionError(
+                    f"TikTok 页面里找不到 SIGI_STATE（返回 {len(html_str)} 字节），"
+                    "可能是风控、页面结构变更或需要登录 cookie。"
+                )
             json_data = json.loads(json_str)
             return json_data
 

@@ -108,9 +108,51 @@ class RecorderProcess:
             return 0
         return int(time.time() - self.started_at)
 
+    def _running_pids(self) -> list[int]:
+        """找出所有在跑的录制器进程 pid（不只是本对象跟踪的那一个）。
+
+        为什么需要这个：界面只跟踪自己启动的那个子进程。一旦界面被强杀/崩溃，
+        录制器会变成孤儿继续录；用户重新打开界面再点「开始录制」，
+        就会**两个录制器并发录同一场直播**，各自写一套文件——
+        表现就是「同一时间段出现多个内容重复的碎片」。
+        """
+        pids: list[int] = []
+        if self.is_running() and self.process is not None:
+            pids.append(self.process.pid)
+        if os.name != "nt":
+            return pids
+        try:
+            out = subprocess.run(
+                ["wmic", "process", "where", "name='python.exe'", "get", "ProcessId,CommandLine", "/format:csv"],
+                capture_output=True, text=True, timeout=10, errors="replace",
+            ).stdout
+        except Exception:
+            return pids                      # 查不到就算了，不要因此拦住启动
+        for line in out.splitlines():
+            if "run-recorder" not in line:
+                continue
+            tail = line.rsplit(",", 1)[-1].strip()
+            if tail.isdigit():
+                pid = int(tail)
+                if pid not in pids:
+                    pids.append(pid)
+        return pids
+
     def start(self) -> dict:
         if self.is_running():
             return {"ok": False, "message": "录制已经在运行中"}
+
+        others = [p for p in self._running_pids()
+                  if self.process is None or p != self.process.pid]
+        if others:
+            return {
+                "ok": False,
+                "message": (f"检测到已有录制进程在运行（pid {', '.join(map(str, others))}）。"
+                            f"重复启动会并发录制同一场直播、写出多套重复文件。"
+                            f"请先「停止录制」，或直接结束这些进程。"),
+                "pids": others,
+            }
+
         (self.base_dir / "logs").mkdir(parents=True, exist_ok=True)
 
         creationflags = 0

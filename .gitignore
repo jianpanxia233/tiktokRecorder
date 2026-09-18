@@ -183,3 +183,6 @@ build-cache/
 
 # 但打包配置本身必须入库 —— 上面的 *.spec 会把它一起吃掉
 !pack/*.spec
+
+# 与 LICENSE 重复的历史遗留文件，且会挡住代码要用的 license/ 目录
+license

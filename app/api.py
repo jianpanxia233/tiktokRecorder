@@ -22,7 +22,7 @@ from . import license as lic
 from .recorder import RecorderProcess
 
 APP_NAME = "DouyinLiveRecorder 桌面版"
-APP_VERSION = "4.0.7"
+APP_VERSION = "4.0.10"
 CONFIG_SECTION = "录制设置"
 UPSTREAM_URL = "https://github.com/ihmily/DouyinLiveRecorder"
 
